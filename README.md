@@ -1,1 +1,1 @@
-# otus-hw
+# Homework for Otus Python course
