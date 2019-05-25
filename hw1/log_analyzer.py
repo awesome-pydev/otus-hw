@@ -11,10 +11,11 @@ import json
 import logging
 import os
 import gzip
+import re
 import sys
 from datetime import datetime as dt
 from statistics import median
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 
 
 default_config = {
@@ -29,28 +30,35 @@ default_config = {
 def find_latest_log(name, path):
     latest_log_date = ''
     latest_log_file = ''
+    LatestLog = namedtuple('LatestLog', ['date', 'filename'])
     for root, dirs, files in os.walk(path):
         print(files)
         for file in files:
             if name in file:
-                date_in_filename = file.split('-')[-1] if not 'gz' in file else file.split('-')[-1].split('.')[0]
-                current_log_data = dt.strptime(date_in_filename, "%Y%m%d")
-                if not latest_log_date:
-                    latest_log_date = current_log_data
-                else:
-                    if current_log_data > latest_log_date:
+                # date_in_filename = file.split('-')[-1] if not 'gz' in file \
+                #     else file.split('-')[-1].split('.')[0]
+                found_log = re.search('nginx-access-ui.log-' + '(\d{4}\d{2}\d{2})\.?', file)
+                if found_log:
+                    current_log_data = dt.strptime(found_log.group(1), "%Y%m%d")
+                    if not latest_log_date:
                         latest_log_date = current_log_data
-                        latest_log_file = file
+                    else:
+                        if current_log_data > latest_log_date:
+                            latest_log_date = current_log_data
+                            latest_log_file = file
 
     if latest_log_date:
-        return latest_log_file
+        return LatestLog(date=latest_log_date,filename=latest_log_file)
     else:
         raise Exception('No logs found')
 
 
 def parse_log(log_path, error_limit):
-    opener = gzip.open(log_path, "r", encoding="UTF-8", ) if log_path.endswith(".gz") \
-        else open(log_path, "r", encoding="UTF-8")
+
+    if log_path.endswith(".gz"):
+        opener = gzip.open(log_path, "r", encoding="UTF-8", )
+    else:
+        opener = open(log_path, "r", encoding="UTF-8")
 
     with opener:
         all_lines = broken_lines = 0
@@ -65,7 +73,7 @@ def parse_log(log_path, error_limit):
 
         if (broken_lines / all_lines) > error_limit:
             logging.error("Error limit exceed")
-            sys.exit(-1)
+            raise RuntimeError('Error limit exceed')
 
 
 def statistics_count(parsed_log):
@@ -102,49 +110,51 @@ def parse_config(config, path):
     with open(path) as f:
         config_from_file = json.load(f)
 
-    for k in config.keys():
-        if k in config_from_file:
-            config[k] = config_from_file[k]
-
+    config.update(config_from_file)
     return config
 
 
 def generate_html_report(report, report_dir, last_report_name):
     try:
-        # open temporary html file and copy his content
         with open('report.html', 'r', encoding='utf-8') as html_template:
             html_data = html_template.read()
-    except:
+    except Exception as err:
         logging.error("Report template not found")
+        logging.exception(err)
         raise
     try:
-        # replace '$table_json' placeholder by the data from filtered_report variable
         newdata = html_data.replace('$table_json', str(report))
 
-        # create temporary html file and inject report data
         with open(os.path.join(report_dir, str('temp_') + last_report_name), 'w', encoding='utf-8') as html_report:
             html_report.write(newdata)
 
-        # if all was ok, remove temp_ mask from report's filename
         os.rename(os.path.join(report_dir, str('temp_') + last_report_name),
                   os.path.join(report_dir, last_report_name))
 
         logging.info("New report has been generated")
-    except:
+    except Exception as err:
         logging.error("An error occurred while creating the html-report")
+        logging.exception(err)
         raise
 
 
+def check_report_existence(report_dir, report_name):
+    return os.path.isfile(os.path.join(report_dir, report_name))
+
+
 def main(config):
-    latest_log_path = find_latest_log('nginx-access-ui', config['LOG_DIR'])
-    last_report_name = 'report_' + str(12345) + '.html' # TODO 111
+    latest_log = find_latest_log('nginx-access-ui', config['LOG_DIR'])
+    last_report_name = 'report_' + latest_log.filename + '.html'
 
-    print(latest_log_path)
-    parsed_log = parse_log(config["LOG_DIR"] + '/' + latest_log_path, config['ERROR_LIMIT'])
-    report = statistics_count(parsed_log)
+    if not check_report_existence(config["LOG_DIR"], latest_log.filename):
+        logging.info("Latest log path - " + latest_log.filename)
+        parsed_log = parse_log(os.path.join(config["LOG_DIR"], latest_log.filename), config['ERROR_LIMIT'])
+        report = statistics_count(parsed_log)
 
-    logging.info("Reports' data has been generated")
-    generate_html_report(report, config['REPORT_DIR'], last_report_name)
+        logging.info("Reports' data has been generated")
+        generate_html_report(report, config['REPORT_DIR'], last_report_name)
+    else:
+        logging.info("Report {} already exists in {}".format(last_report_name, config['REPORT_DIR']))
 
 
 if __name__ == "__main__":

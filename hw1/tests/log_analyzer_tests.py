@@ -45,7 +45,7 @@ class LogParserTestCase(unittest.TestCase):
 
         try:
             list(parse_log(test_log_path, self.config['ERROR_LIMIT']))
-        except SystemExit:
+        except RuntimeError:
             self.assertTrue(True)
         else:
             self.assertTrue(False)
